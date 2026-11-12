@@ -1,0 +1,82 @@
+name: build
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  selftest:
+    # Decoder self-test without foobar2000: decode, seek and rejection of non-MPEG-H files.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build self-test
+        run: |
+          # the non-Windows flavour of the foobar2000 SDK expects clang
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DMPEGH_BUILD_SELFTEST=ON -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+          cmake --build build --target selftest -j4
+      - name: Run self-test
+        run: |
+          base=https://media.githubusercontent.com/media/Fraunhofer-IIS/mpegh-test-content/main/transport_layer_test_content
+          curl -sSfL -o t6.mp4  $base/CICP_06/mp4/baseline/32kbps/mpegh_cicp_06_baseline_32kbps.mp4
+          curl -sSfL -o t12.mp4 $base/CICP_12/mp4/lc_baseline_compatible/32kbps/mpegh_cicp_12_lc_baseline_compatible_32kbps_fragmented.mp4
+          for f in t6.mp4 t12.mp4; do
+            for layout in 2 6 12; do MPEGH_CICP=$layout ./build/selftest $f out.wav; done
+            ./build/selftest $f --seek
+          done
+          ./build/selftest README.md --reject
+
+  windows:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, Win32]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -A ${{ matrix.arch }}
+      - name: Build
+        run: cmake --build build --config Release --target foo_input_mpegh --parallel
+      - name: Locate DLL
+        shell: bash
+        run: |
+          mkdir out
+          cp "$(find build -name foo_input_mpegh.dll | head -1)" out/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dll-${{ matrix.arch }}
+          path: out/foo_input_mpegh.dll
+
+  package:
+    needs: [selftest, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dl
+      - name: Make .fb2k-component
+        run: |
+          mkdir -p pkg/x64
+          cp dl/dll-Win32/foo_input_mpegh.dll pkg/
+          cp dl/dll-x64/foo_input_mpegh.dll pkg/x64/
+          cp LICENSE pkg/LICENSE-foo_input_mpegh.txt
+          cp third_party_licenses/* pkg/
+          (cd pkg && zip -r -9 ../foo_input_mpegh.fb2k-component .)
+          unzip -l foo_input_mpegh.fb2k-component
+      - uses: actions/upload-artifact@v4
+        with:
+          name: foo_input_mpegh
+          path: foo_input_mpegh.fb2k-component
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: foo_input_mpegh.fb2k-component
