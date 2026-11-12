@@ -382,12 +382,15 @@ const int kMaxFrame = 3072;
 }
 
 // Runs fn(); errors raised by the MP4 reader / decoder libraries become foobar2000 I/O errors,
-// while foobar2000's own exceptions (abort, I/O) pass through unchanged.
+// while foobar2000's own exceptions (abort, I/O) pass through unchanged. (On Windows
+// pfc::exception is std::exception, so the foobar2000 types are caught by name.)
 template <typename F>
 auto guarded(abort_callback& abort, F&& fn) -> decltype(fn()) {
   try {
     return fn();
-  } catch (pfc::exception const&) {
+  } catch (exception_aborted const&) {
+    throw;
+  } catch (exception_io const&) {
     throw;
   } catch (std::exception const& e) {
     abort.check();
@@ -558,7 +561,9 @@ class input_mpegh : public input_stubs {
                         ESampleSeekMode::lastSyncSampleSmaller);
         m_sampleInfo = m_track->sampleByTimestamp(cfg, m_sample);
         found = !m_sample.empty();
-      } catch (pfc::exception const&) {
+      } catch (exception_aborted const&) {
+        throw;
+      } catch (exception_io const&) {
         throw;
       } catch (std::exception const&) {
         found = false;
